@@ -1,0 +1,15 @@
+﻿Проверка;Регион_или_ключ
+unmatched_y_grp;ненецкий авт округ
+unmatched_y_grp;тюменская область без ао
+unmatched_y_grp;ханты мансийский авт округ югра
+unmatched_grp_y;архангельская область без ао
+unmatched_grp_y;в т ч ненецкий авт округ
+unmatched_grp_y;в т ч ханты мансийский авт округ югра
+unmatched_y_rd;еврейская автономная область
+unmatched_y_rd;чукотский авт округ
+unmatched_rd_y;архангельская область без ао
+incomplete_regions;Ненецкий автономный округ
+incomplete_regions;Ханты-Мансийский автономный округ - Югра
+incomplete_regions;Тюменская область без автономных округов
+incomplete_regions;Еврейская автономная область
+incomplete_regions;Чукотский автономный округ
