@@ -30,6 +30,116 @@ AGGREGATE_KEYS = {
     "тюменская область",
 }
 
+# Качественный фактор: сторона света. Признак строится по координатам
+# административных центров регионов (широта/долгота, градусы):
+#   Север  — широта не ниже 60° с. ш.;
+#   Восток — остальные регионы с долготой не менее 60° в. д.;
+#   Юг     — остальные регионы с широтой менее 50° с. ш.;
+#   Запад  — остальные регионы европейской части (базовая категория).
+# Для Ленинградской области и Московской области использованы координаты
+# Санкт-Петербурга и Москвы соответственно.
+COORDS = {
+    "Алтайский край": (53.35, 83.78),
+    "Амурская область": (50.29, 127.53),
+    "Астраханская область": (46.35, 48.04),
+    "Белгородская область": (50.60, 36.59),
+    "Брянская область": (53.24, 34.36),
+    "Владимирская область": (56.13, 40.41),
+    "Волгоградская область": (48.71, 44.51),
+    "Вологодская область": (59.22, 39.89),
+    "Воронежская область": (51.67, 39.18),
+    "Забайкальский край": (52.03, 113.50),
+    "Ивановская область": (57.00, 40.97),
+    "Иркутская область": (52.29, 104.28),
+    "Кабардино-Балкарская Республика": (43.48, 43.62),
+    "Калининградская область": (54.71, 20.51),
+    "Калужская область": (54.51, 36.26),
+    "Камчатский край": (53.02, 158.65),
+    "Карачаево-Черкесская Республика": (44.22, 42.06),
+    "Кемеровская область": (55.35, 86.09),
+    "Кировская область": (58.60, 49.66),
+    "Костромская область": (57.77, 40.93),
+    "Краснодарский край": (45.04, 38.98),
+    "Красноярский край": (56.01, 92.87),
+    "Курганская область": (55.44, 65.34),
+    "Курская область": (51.73, 36.19),
+    "Ленинградская область": (59.94, 30.31),
+    "Липецкая область": (52.61, 39.60),
+    "Магаданская область": (59.56, 150.80),
+    "Московская область": (55.76, 37.62),
+    "Мурманская область": (68.97, 33.08),
+    "Нижегородская область": (56.33, 44.00),
+    "Новгородская область": (58.52, 31.27),
+    "Новосибирская область": (55.03, 82.92),
+    "Омская область": (54.99, 73.37),
+    "Оренбургская область": (51.77, 55.10),
+    "Орловская область": (52.97, 36.06),
+    "Пензенская область": (53.20, 45.00),
+    "Пермский край": (58.01, 56.25),
+    "Приморский край": (43.12, 131.89),
+    "Псковская область": (57.82, 28.33),
+    "Республика Адыгея (Адыгея)": (44.61, 40.10),
+    "Республика Алтай": (51.96, 85.96),
+    "Республика Башкортостан": (54.74, 55.97),
+    "Республика Бурятия": (51.83, 107.58),
+    "Республика Дагестан": (42.98, 47.50),
+    "Республика Ингушетия": (43.17, 44.81),
+    "Республика Калмыкия": (46.31, 44.27),
+    "Республика Карелия": (61.79, 34.35),
+    "Республика Коми": (61.67, 50.84),
+    "Республика Крым": (44.95, 34.10),
+    "Республика Марий Эл": (56.63, 47.90),
+    "Республика Мордовия": (54.18, 45.18),
+    "Республика Саха (Якутия)": (62.03, 129.73),
+    "Республика Северная Осетия - Алания": (43.04, 44.67),
+    "Республика Татарстан (Татарстан)": (55.79, 49.12),
+    "Республика Тыва": (51.72, 94.45),
+    "Республика Хакасия": (53.72, 91.43),
+    "Ростовская область": (47.23, 39.72),
+    "Рязанская область": (54.63, 39.74),
+    "Самарская область": (53.20, 50.15),
+    "Саратовская область": (51.53, 46.03),
+    "Сахалинская область": (46.96, 142.74),
+    "Свердловская область": (56.84, 60.61),
+    "Смоленская область": (54.78, 32.05),
+    "Ставропольский край": (45.04, 41.97),
+    "Тамбовская область": (52.72, 41.45),
+    "Тверская область": (56.86, 35.91),
+    "Томская область": (56.50, 84.97),
+    "Тульская область": (54.20, 37.62),
+    "Удмуртская Республика": (56.85, 53.20),
+    "Ульяновская область": (54.32, 48.40),
+    "Хабаровский край": (48.48, 135.07),
+    "Челябинская область": (55.16, 61.40),
+    "Чеченская Республика": (43.32, 45.70),
+    "Чувашская Республика -Чувашия": (56.13, 47.25),
+    "Ямало-Ненецкий автономный округ": (66.53, 66.63),
+    "Ярославская область": (57.63, 39.87),
+    "г. Москва": (55.76, 37.62),
+    "г. Санкт-Петербург": (59.94, 30.31),
+    "г. Севастополь": (44.62, 33.53),
+    # Территории, которые присутствуют в исходной таблице инноваций, но
+    # исключаются из-за неполного сопоставления с ВРП/НИР (координаты нужны
+    # только для прохождения проверки при чтении источника).
+    "Ненецкий автономный округ": (67.64, 53.01),
+    "Ханты-Мансийский автономный округ - Югра": (61.00, 69.02),
+    "Тюменская область без автономных округов": (57.15, 65.53),
+    "Еврейская автономная область": (48.79, 132.92),
+    "Чукотский автономный округ": (64.73, 177.51),
+}
+SIDE_ORDER = ["Запад", "Север", "Юг", "Восток"]
+BASE_SIDE = "Запад"
+
+
+def side_by_coords(lat: float, lon: float) -> str:
+    if lat >= 60:
+        return "Север"
+    if lon >= 60:
+        return "Восток"
+    if lat < 50:
+        return "Юг"
+    return "Запад"
+
 ALIASES = {
     "республика адыгея адыгея": "республика адыгея",
     "адыгея": "республика адыгея",
@@ -110,10 +220,16 @@ def read_innovation() -> pd.DataFrame:
         value = numeric_value(sheet.cell_value(row_idx, 1))
         if not np.isfinite(value):
             continue
+        if name not in COORDS:
+            raise ValueError(f"Нет координат административного центра для региона: «{name}»")
+        lat, lon = COORDS[name]
         rows.append({
             "region_key": key,
             "region": name,
             "district": district,
+            "side": side_by_coords(lat, lon),
+            "lat": lat,
+            "lon": lon,
             "innovation_mln": value / 1000,
             "source_row_y": row_idx + 1,
         })
@@ -163,10 +279,11 @@ def build_dataset() -> tuple[pd.DataFrame, dict[str, list[str]]]:
 
     data = y.merge(grp, on="region_key", how="left", validate="one_to_one")
     data = data.merge(rd, on="region_key", how="left", validate="one_to_one")
-    missing = data[["innovation_mln", "grp_mln", "rd_mln", "district"]].isna().any(axis=1)
+    missing = data[["innovation_mln", "grp_mln", "rd_mln", "district", "side", "lat", "lon"]].isna().any(axis=1)
     audit["incomplete_regions"] = data.loc[missing, "region"].tolist()
     data = data.loc[~missing].copy()
     data = data.sort_values("region").reset_index(drop=True)
+    data["side"] = pd.Categorical(data["side"], categories=SIDE_ORDER, ordered=False)
 
     if len(data) <= TEST_SIZE + 12:
         raise ValueError(f"После объединения осталось мало наблюдений: n={len(data)}")
@@ -256,8 +373,8 @@ def bootstrap_mean_median(values: np.ndarray, repetitions: int = 10000) -> dict[
 
 
 def fit_models(train: pd.DataFrame) -> dict[str, object]:
-    formula_level = "innovation_mln ~ grp_mln + rd_mln + C(district)"
-    formula_log = "log_innovation ~ log_grp + log_rd + C(district)"
+    formula_level = "innovation_mln ~ grp_mln + rd_mln + C(side)"
+    formula_log = "log_innovation ~ log_grp + log_rd + C(side)"
     level = smf.ols(formula_level, data=train).fit()
     positive = train.loc[
         (train[["innovation_mln", "grp_mln", "rd_mln"]] > 0).all(axis=1)
@@ -361,21 +478,44 @@ def create_charts(train: pd.DataFrame, test_predictions: pd.DataFrame,
         fig.savefig(OUT / f"hist_{column}.png", dpi=180)
         plt.close(fig)
 
-    district_counts = train["district"].value_counts()
+    side_counts = train["side"].value_counts().reindex(SIDE_ORDER).fillna(0).astype(int)
     fig, ax = plt.subplots(figsize=(9, 6))
-    ax.barh(district_counts.index[::-1], district_counts.values[::-1], color="#4daf4a")
-    ax.set_title("Регионы обучающей выборки по федеральным округам")
+    ax.barh(side_counts.index[::-1], side_counts.values[::-1], color="#4daf4a")
+    ax.set_title("Регионы обучающей выборки по сторонам света")
     ax.set_xlabel("Число регионов")
-    ax.set_ylabel("Федеральный округ")
+    ax.set_ylabel("Сторона света")
     fig.tight_layout()
-    fig.savefig(OUT / "regions_by_district.png", dpi=180)
+    fig.savefig(OUT / "regions_by_side.png", dpi=180)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 7))
-    ax.pie(district_counts.values, labels=district_counts.index, autopct="%1.0f%%", startangle=90)
-    ax.set_title("Структура обучающей выборки по федеральным округам")
+    ax.pie(side_counts.values, labels=side_counts.index, autopct="%1.0f%%", startangle=90)
+    ax.set_title("Структура обучающей выборки по сторонам света")
     fig.tight_layout()
-    fig.savefig(OUT / "district_share_pie.png", dpi=180)
+    fig.savefig(OUT / "side_share_pie.png", dpi=180)
+    plt.close(fig)
+
+    palette = {"Запад": "#377eb8", "Север": "#4daf4a", "Юг": "#e41a1c", "Восток": "#ff7f00"}
+    fig, ax = plt.subplots(figsize=(10, 6.2))
+    for side_name in SIDE_ORDER:
+        part = train.loc[train["side"] == side_name]
+        if len(part):
+            ax.scatter(part["lon"], part["lat"], s=36, alpha=0.85,
+                       color=palette[side_name], label=f"{side_name} ({len(part)})")
+    ax.axhline(60, color="#555555", linestyle="--", linewidth=1)
+    ax.axhline(50, color="#555555", linestyle="--", linewidth=1)
+    ax.axvline(60, color="#555555", linestyle="--", linewidth=1)
+    ax.text(166, 60.4, "60° с. ш.", ha="right", va="bottom", fontsize=9, color="#333333")
+    ax.text(166, 50.4, "50° с. ш.", ha="right", va="bottom", fontsize=9, color="#333333")
+    ax.text(61, 40.8, "60° в. д.", ha="left", va="bottom", fontsize=9, color="#333333")
+    ax.set_xlim(15, 170)
+    ax.set_ylim(40, 72)
+    ax.set_xlabel("Долгота административного центра, ° в. д.")
+    ax.set_ylabel("Широта административного центра, ° с. ш.")
+    ax.set_title("Распределение регионов обучающей выборки по сторонам света")
+    ax.legend(title="Сторона света (число регионов)", loc="lower right")
+    fig.tight_layout()
+    fig.savefig(OUT / "sides_map.png", dpi=180)
     plt.close(fig)
 
     corr = train[numeric].corr(method="pearson")
@@ -442,12 +582,16 @@ def main() -> None:
     test = data.loc[data.index.isin(test_indices)].copy().sort_values("region")
     train = data.loc[~data.index.isin(test_indices)].copy().sort_values("region")
 
-    data_out = data[["region", "district", "innovation_mln", "grp_mln", "rd_mln"]].copy()
-    data_out.columns = ["Регион", "Федеральный округ", "Затраты на инновации, млн руб.",
+    data_out = data[["region", "district", "side", "lat", "lon", "innovation_mln", "grp_mln", "rd_mln"]].copy()
+    data_out.columns = ["Регион", "Федеральный округ", "Сторона света",
+                        "Широта центра, ° с. ш.", "Долгота центра, ° в. д.",
+                        "Затраты на инновации, млн руб.",
                         "ВРП, млн руб.", "Затраты на НИР, млн руб."]
     save_csv(data_out, "01_сводная_таблица.csv")
-    save_csv(train[["region", "district", "innovation_mln", "grp_mln", "rd_mln"]], "02_обучающая_выборка.csv")
-    save_csv(test[["region", "district", "innovation_mln", "grp_mln", "rd_mln"]], "03_тестовые_регионы.csv")
+    save_csv(train[["region", "district", "side", "lat", "lon", "innovation_mln", "grp_mln", "rd_mln"]],
+             "02_обучающая_выборка.csv")
+    save_csv(test[["region", "district", "side", "lat", "lon", "innovation_mln", "grp_mln", "rd_mln"]],
+             "03_тестовые_регионы.csv")
 
     audit_rows = []
     for check, regions in audit.items():
@@ -465,6 +609,61 @@ def main() -> None:
     spearman = train[["innovation_mln", "grp_mln", "rd_mln"]].corr(method="spearman")
     save_csv(spearman.rename_axis("Показатель").reset_index(), "06a_ранговые_корреляции.csv")
 
+    pairs = [
+        ("Затраты — ВРП", "innovation_mln", "grp_mln"),
+        ("Затраты — НИР", "innovation_mln", "rd_mln"),
+        ("ВРП — НИР", "grp_mln", "rd_mln"),
+    ]
+    corr_rows = []
+    corr_df = len(train) - 2
+    t_crit_corr = float(stats.t.ppf(1 - ALPHA / 2, corr_df))
+    for label, first, second in pairs:
+        x = train[first].to_numpy()
+        yv = train[second].to_numpy()
+        r = float(np.corrcoef(x, yv)[0, 1])
+        t_r = float(r * np.sqrt(corr_df / (1 - r * r)))
+        p_r = float(2 * stats.t.sf(abs(t_r), corr_df))
+        rs = float(stats.spearmanr(x, yv).statistic)
+        t_s = float(rs * np.sqrt(corr_df / (1 - rs * rs)))
+        p_s = float(2 * stats.t.sf(abs(t_s), corr_df))
+        corr_rows.append({
+            "Пара": label,
+            "r_Пирсона": r, "t_Пирсона": t_r, "p_Пирсона": p_r,
+            "r_Спирмена": rs, "t_Спирмена": t_s, "p_Спирмена": p_s,
+            "df": corr_df, "t_критическое": t_crit_corr,
+        })
+    save_csv(pd.DataFrame(corr_rows), "06b_значимость_корреляций.csv")
+
+    side_groups = [(s, train.loc[train["side"] == s, "innovation_mln"].to_numpy())
+                   for s in SIDE_ORDER if (train["side"] == s).any()]
+    f_anova, p_anova = stats.f_oneway(*[g for _, g in side_groups])
+    grand_mean = float(train["innovation_mln"].mean())
+    ss_between = sum(len(g) * (g.mean() - grand_mean) ** 2 for _, g in side_groups)
+    ss_within = sum(((g - g.mean()) ** 2).sum() for _, g in side_groups)
+    ss_total = ss_between + ss_within
+    df_between = len(side_groups) - 1
+    df_within = len(train) - len(side_groups)
+    eta2 = float(ss_between / ss_total)
+    save_csv(pd.DataFrame([
+        {"Источник": "Межгрупповая (сторона света)", "SS": ss_between, "df": df_between,
+         "MS": ss_between / df_between, "F": f_anova, "p_value": p_anova, "eta2": eta2},
+        {"Источник": "Внутригрупповая (остаток)", "SS": ss_within, "df": df_within,
+         "MS": ss_within / df_within, "F": np.nan, "p_value": np.nan, "eta2": np.nan},
+        {"Источник": "Итого", "SS": ss_total, "df": len(train) - 1,
+         "MS": np.nan, "F": np.nan, "p_value": np.nan, "eta2": np.nan},
+    ]), "07a_anova_по_сторонам.csv")
+    side_means = []
+    for side_name, _ in side_groups:
+        part = train.loc[train["side"] == side_name]
+        side_means.append({
+            "Сторона света": side_name, "n": len(part),
+            "Среднее Y": part["innovation_mln"].mean(),
+            "Медиана Y": part["innovation_mln"].median(),
+            "Среднее ВРП": part["grp_mln"].mean(),
+            "Среднее НИР": part["rd_mln"].mean(),
+        })
+    save_csv(pd.DataFrame(side_means), "07b_средние_по_сторонам.csv")
+
     median_test = bootstrap_mean_median(train["innovation_mln"].to_numpy())
     pd.DataFrame([median_test]).to_csv(OUT / "07_тест_среднего_и_медианы.csv", index=False,
                                       sep=";", decimal=",", encoding="utf-8-sig")
@@ -476,13 +675,42 @@ def main() -> None:
     summaries = model_summary_table(models)
     save_csv(summaries, "09_сводка_моделей.csv")
 
+    level_model = models["level"]
+    save_csv(pd.DataFrame([
+        {"Источник": "Регрессия", "SS": level_model.ess, "df": int(level_model.df_model),
+         "MS": level_model.mse_model, "F": level_model.fvalue, "p_value": level_model.f_pvalue},
+        {"Источник": "Остаток", "SS": level_model.ssr, "df": int(level_model.df_resid),
+         "MS": level_model.mse_resid, "F": np.nan, "p_value": np.nan},
+        {"Источник": "Итого", "SS": level_model.ess + level_model.ssr,
+         "df": int(level_model.nobs) - 1, "MS": np.nan, "F": np.nan, "p_value": np.nan},
+    ]), "09a_дисперсионный_анализ_модели.csv")
+
+    from statsmodels.stats.outliers_influence import variance_inflation_factor
+    vif_rows = []
+    for i, param_name in enumerate(level_model.model.exog_names):
+        if param_name == "Intercept":
+            continue
+        label = {"grp_mln": "ВРП", "rd_mln": "НИР"}.get(
+            param_name, param_name.replace("C(side)[T.", "Сторона света: ").replace("]", ""))
+        vif_rows.append({"Переменная": label,
+                         "VIF": float(variance_inflation_factor(level_model.model.exog, i))})
+    save_csv(pd.DataFrame(vif_rows), "11c_VIF.csv")
+
+    train_reset = train.copy()
+    train_reset["fitted_sq"] = np.asarray(level_model.fittedvalues) ** 2
+    reset_model = smf.ols(
+        "innovation_mln ~ grp_mln + rd_mln + C(side) + fitted_sq", data=train_reset
+    ).fit()
+    reset_t = float(reset_model.tvalues["fitted_sq"])
+    reset_p = float(reset_model.pvalues["fitted_sq"])
+
     one_sided_p = (models["level"].pvalues["grp_mln"] / 2
                    if models["level"].params["grp_mln"] > 0
                    else 1 - models["level"].pvalues["grp_mln"] / 2)
     grp_df = int(models["level"].df_resid)
     grp_t_critical = float(stats.t.ppf(1 - ALPHA, grp_df))
     pd.DataFrame([{
-        "Гипотеза": "Положительная связь ВРП и затрат на инновации при контроле НИР и федерального округа",
+        "Гипотеза": "Положительная связь ВРП и затрат на инновации при контроле НИР и стороны света",
         "Оценка_коэффициента_ВРП": models["level"].params["grp_mln"],
         "t_расчетное": models["level"].tvalues["grp_mln"],
         "t_критическое_одностороннее": grp_t_critical,
@@ -495,6 +723,9 @@ def main() -> None:
     diagnostic_rows = []
     for name, model in models.items():
         result = diagnostics(model, train)
+        if name == "level":
+            result["RESET_F"] = reset_t ** 2
+            result["RESET_p_value"] = reset_p
         result["model"] = "Уровни" if name == "level" else "Логарифмы"
         diagnostic_rows.append(result)
     pd.DataFrame(diagnostic_rows).to_csv(OUT / "11_диагностика_моделей.csv", index=False,
@@ -509,7 +740,7 @@ def main() -> None:
     most_influential_region = train.iloc[most_influential_index]["region"]
     sensitivity_train = train.drop(train.index[most_influential_index])
     sensitivity_model = smf.ols(
-        "innovation_mln ~ grp_mln + rd_mln + C(district)", data=sensitivity_train
+        "innovation_mln ~ grp_mln + rd_mln + C(side)", data=sensitivity_train
     ).fit()
     pd.DataFrame([
         {
@@ -605,12 +836,19 @@ def main() -> None:
     log_frame["log_grp"] = np.log(log_frame["grp_mln"])
     log_frame["log_rd"] = np.log(log_frame["rd_mln"])
     log_pred = np.exp(models["log"].predict(log_frame) + models["log"].mse_resid / 2)
+    level_sf = models["level"].get_prediction(test).summary_frame(alpha=ALPHA)
+    log_sf = models["log"].get_prediction(log_frame).summary_frame(alpha=ALPHA)
     predictions = pd.DataFrame({
         "region": test["region"].to_numpy(),
         "district": test["district"].to_numpy(),
+        "side": test["side"].astype(str).to_numpy(),
         "actual": test["innovation_mln"].to_numpy(),
         "predicted_level": np.asarray(level_pred),
+        "lower_level": np.asarray(level_sf["obs_ci_lower"]),
+        "upper_level": np.asarray(level_sf["obs_ci_upper"]),
         "predicted_log": np.asarray(log_pred),
+        "lower_log": np.exp(np.asarray(log_sf["obs_ci_lower"])),
+        "upper_log": np.exp(np.asarray(log_sf["obs_ci_upper"])),
     })
     save_csv(predictions, "12_прогнозы_тестовых_регионов.csv")
     metric_rows = []

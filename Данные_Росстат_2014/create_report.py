@@ -1,15 +1,19 @@
 from pathlib import Path
 import csv
+import json
 import math
+import os
+import re
 from docx import Document
 from docx.shared import Inches, Pt, Cm, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT, WD_TAB_LEADER
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.text.paragraph import Paragraph
 
 ROOT = Path(__file__).resolve().parent
-OUT = ROOT / 'Отчет_вариант_31_задания_1_и_2.docx'
+OUT = Path(os.environ.get('REPORT_OUT') or (ROOT / 'Отчет_вариант_31_задания_1_и_2.docx'))
 RES = ROOT / 'Результаты_анализа'
 
 def read_csv(name):
@@ -25,6 +29,33 @@ def val(s, digits=3):
 def num(s):
     return float(str(s).replace(',', '.'))
 
+COEF_LABELS = {
+    'Intercept': 'Свободный член',
+    'C(side)[T.Север]': 'Сторона света: Север',
+    'C(side)[T.Юг]': 'Сторона света: Юг',
+    'C(side)[T.Восток]': 'Сторона света: Восток',
+    'grp_mln': 'ВРП, млн руб.',
+    'rd_mln': 'НИР, млн руб.',
+}
+
+def coef_label(name):
+    return COEF_LABELS.get(name, name)
+
+CORR_LABELS = {
+    'innovation_mln': 'Затраты на инновации',
+    'grp_mln': 'ВРП',
+    'rd_mln': 'НИР',
+}
+
+def minus(s):
+    return str(s).replace('-', '−')
+
+def fmt_p(value, digits=4):
+    x = num(value)
+    if x < 10 ** (-digits):
+        return '< 0,' + '0' * (digits - 1) + '1'
+    return f'{x:.{digits}f}'.replace('.', ',')
+
 def set_cell_shading(cell, fill):
     tcPr = cell._tc.get_or_add_tcPr()
     shd = OxmlElement('w:shd'); shd.set(qn('w:fill'), fill); tcPr.append(shd)
@@ -32,33 +63,82 @@ def set_cell_shading(cell, fill):
 def repeat_table_header(row):
     trPr = row._tr.get_or_add_trPr(); el = OxmlElement('w:tblHeader'); el.set(qn('w:val'), 'true'); trPr.append(el)
 
+def set_table_grid(t, widths):
+    t.autofit = False
+    tblPr = t._tbl.tblPr
+    tblW = tblPr.find(qn('w:tblW'))
+    if tblW is None:
+        tblW = OxmlElement('w:tblW')
+        tblPr.insert_element_before(tblW, 'w:jc', 'w:tblCellSpacing', 'w:tblInd', 'w:tblBorders',
+                                    'w:shd', 'w:tblLayout', 'w:tblCellMar', 'w:tblLook')
+    tblW.set(qn('w:type'), 'dxa')
+    tblW.set(qn('w:w'), str(int(round(sum(widths) * 567))))
+    gridCols = t._tbl.tblGrid.gridCol_lst
+    for gc, w in zip(gridCols, widths):
+        gc.set(qn('w:w'), str(int(round(w * 567))))
+    for row in t.rows:
+        trPr = row._tr.get_or_add_trPr()
+        if trPr.find(qn('w:cantSplit')) is None:
+            cs = OxmlElement('w:cantSplit')
+            trPr.insert_element_before(cs, 'w:trHeight', 'w:tblHeader', 'w:tblCellSpacing', 'w:jc',
+                                       'w:hidden', 'w:ins', 'w:del', 'w:trPrChange')
+        for j, w in enumerate(widths):
+            row.cells[j].width = Cm(w)
+
 TABLE_NO = 0
 FIGURE_NO = 0
 
-def table(doc, headers, rows, caption, widths=None, font=9):
+NUM_RE = re.compile(r'^[−\-–]?\s*\d[\d\s]*(?:[.,]\d+)?\s*%?$')
+
+def set_table_frame(t):
+    tblPr = t._tbl.tblPr
+    borders = OxmlElement('w:tblBorders')
+    for edge in ('top','left','bottom','right','insideH','insideV'):
+        el = OxmlElement('w:'+edge)
+        el.set(qn('w:val'),'single'); el.set(qn('w:sz'),'4')
+        el.set(qn('w:space'),'0'); el.set(qn('w:color'),'A6A6A6')
+        borders.append(el)
+    old = tblPr.find(qn('w:tblBorders'))
+    if old is not None: tblPr.remove(old)
+    tblPr.insert_element_before(borders, 'w:shd', 'w:tblLayout', 'w:tblCellMar', 'w:tblLook')
+    mar = OxmlElement('w:tblCellMar')
+    for edge, value in (('top','45'), ('left','70'), ('bottom','45'), ('right','70')):
+        el = OxmlElement('w:'+edge); el.set(qn('w:w'), value); el.set(qn('w:type'),'dxa'); mar.append(el)
+    oldm = tblPr.find(qn('w:tblCellMar'))
+    if oldm is not None: tblPr.remove(oldm)
+    tblPr.insert_element_before(mar, 'w:tblLook')
+
+def table(doc, headers, rows, caption, widths, font=10):
     global TABLE_NO
     TABLE_NO += 1
-    p=doc.add_paragraph(f'Данные представлены в таблице {TABLE_NO}.')
-    p.paragraph_format.first_line_indent=Cm(1.25); p.paragraph_format.keep_with_next=True
-    p=doc.add_paragraph(f'Таблица {TABLE_NO} — {caption}')
-    p.paragraph_format.first_line_indent=Cm(0); p.paragraph_format.space_before=Pt(6); p.paragraph_format.space_after=Pt(3)
+    p=doc.add_paragraph(f'Таблица {TABLE_NO} – {caption}')
+    p.paragraph_format.first_line_indent=Cm(0); p.paragraph_format.space_before=Pt(24); p.paragraph_format.space_after=Pt(6)
     p.paragraph_format.keep_with_next=True
     for r in p.runs: r.font.size=Pt(12)
     t = doc.add_table(rows=1, cols=len(headers)); t.alignment=WD_TABLE_ALIGNMENT.CENTER; t.style='Table Grid'
     repeat_table_header(t.rows[0])
     for j,h in enumerate(headers):
-        c=t.rows[0].cells[j]; c.text=str(h); set_cell_shading(c,'DCE6F1')
-        for r in c.paragraphs[0].runs: r.bold=True; r.font.size=Pt(font)
+        c=t.rows[0].cells[j]; c.text=str(h); set_cell_shading(c,'E7ECF0')
+        for p in c.paragraphs:
+            p.paragraph_format.first_line_indent=Cm(0)
+            p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+        for r in c.paragraphs[0].runs: r.bold=False; r.font.size=Pt(font)
     for row in rows:
         cells=t.add_row().cells
         for j,x in enumerate(row):
-            cells[j].text=str(x); cells[j].vertical_alignment=WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            text = str(x)
+            cells[j].text=text; cells[j].vertical_alignment=WD_CELL_VERTICAL_ALIGNMENT.CENTER
             for p in cells[j].paragraphs:
                 p.paragraph_format.space_after=Pt(0)
+                p.paragraph_format.first_line_indent=Cm(0)
+                p.alignment=WD_ALIGN_PARAGRAPH.RIGHT if NUM_RE.match(text.strip()) else WD_ALIGN_PARAGRAPH.LEFT
                 for r in p.runs: r.font.size=Pt(font)
-    if widths:
-        for row in t.rows:
-            for j,w in enumerate(widths): row.cells[j].width=Cm(w)
+    set_table_grid(t, widths)
+    set_table_frame(t)
+    for row in t.rows[:-1]:
+        for c in row.cells:
+            for p in c.paragraphs:
+                p.paragraph_format.keep_with_next=True
     return t
 
 def para(doc, text='', bold_lead=None, style=None):
@@ -75,11 +155,11 @@ def para(doc, text='', bold_lead=None, style=None):
 def heading(doc, text, level=1):
     p=doc.add_heading(text, level=level)
     p.paragraph_format.keep_with_next=True
-    p.paragraph_format.first_line_indent=Cm(0 if level==1 and text.upper() in {'СОДЕРЖАНИЕ','РЕФЕРАТ','ПЕРЕЧЕНЬ СОКРАЩЕНИЙ И ОБОЗНАЧЕНИЙ','ВВЕДЕНИЕ','ЗАКЛЮЧЕНИЕ','СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ'} else 1.25)
-    p.paragraph_format.space_before=Pt(12 if level==1 else 8); p.paragraph_format.space_after=Pt(6)
+    p.paragraph_format.first_line_indent=Cm(0 if level==1 and text.upper() in {'ОГЛАВЛЕНИЕ','РЕФЕРАТ','ПЕРЕЧЕНЬ СОКРАЩЕНИЙ И ОБОЗНАЧЕНИЙ','ВВЕДЕНИЕ','ЗАКЛЮЧЕНИЕ','СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ'} else 1.25)
+    p.paragraph_format.space_before=Pt(12 if level==1 else 8); p.paragraph_format.space_after=Pt(18 if level==1 else 6)
     if level==1:
         p.paragraph_format.page_break_before=True
-    if level==1 and text.upper() in {'СОДЕРЖАНИЕ','РЕФЕРАТ','ПЕРЕЧЕНЬ СОКРАЩЕНИЙ И ОБОЗНАЧЕНИЙ','ВВЕДЕНИЕ','ЗАКЛЮЧЕНИЕ','СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ'}:
+    if level==1 and text.upper() in {'ОГЛАВЛЕНИЕ','РЕФЕРАТ','ПЕРЕЧЕНЬ СОКРАЩЕНИЙ И ОБОЗНАЧЕНИЙ','ВВЕДЕНИЕ','ЗАКЛЮЧЕНИЕ','СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ'}:
         p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.page_break_before=True
         for run in p.runs: run.text=run.text.upper()
     else: p.alignment=WD_ALIGN_PARAGRAPH.LEFT
@@ -88,33 +168,45 @@ def heading(doc, text, level=1):
 def figure(doc, filename, caption, width=6.1):
     global FIGURE_NO
     FIGURE_NO += 1
-    caption=caption.replace('Рисунок ', f'Рисунок {FIGURE_NO} — ',1) if not caption.startswith('Рисунок ') else caption
-    p=doc.add_paragraph(f'Графическое представление результатов показано на рисунке {FIGURE_NO}.')
-    p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.first_line_indent=Cm(1.25); p.paragraph_format.keep_with_next=True
+    caption = re.sub(r'^Рисунок\s+\d+\s*[—–-]\s*', '', caption)
+    caption = f'Рисунок {FIGURE_NO} – {caption}'
     path=RES/filename
-    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.keep_with_next=True
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.keep_with_next=True; p.paragraph_format.first_line_indent=Cm(0)
     p.add_run().add_picture(str(path), width=Inches(width))
     cap=doc.add_paragraph(caption.rstrip('.')); cap.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    cap.paragraph_format.first_line_indent=Cm(0); cap.paragraph_format.space_before=Pt(3); cap.paragraph_format.space_after=Pt(6)
+    cap.paragraph_format.first_line_indent=Cm(0); cap.paragraph_format.space_before=Pt(6); cap.paragraph_format.space_after=Pt(24)
+    cap.paragraph_format.line_spacing=1.0
     for r in cap.runs: r.font.size=Pt(12)
     cap.paragraph_format.keep_with_next=False
 
 def equation(doc, text, number, fontsize=12):
     t=doc.add_table(rows=1, cols=3)
-    t.autofit=False
-    widths=[Cm(1.5),Cm(13.5),Cm(1.5)]
+    widths=[1.5,13.5,1.5]
     for i,c in enumerate(t.rows[0].cells):
-        c.width=widths[i]
-        p=c.paragraphs[0]; p.paragraph_format.space_before=Pt(8); p.paragraph_format.space_after=Pt(8)
+        c.vertical_alignment=WD_CELL_VERTICAL_ALIGNMENT.CENTER
+        p=c.paragraphs[0]; p.paragraph_format.first_line_indent=Cm(0)
+        p.paragraph_format.space_before=Pt(8); p.paragraph_format.space_after=Pt(8)
         if i==1:
             p.alignment=WD_ALIGN_PARAGRAPH.CENTER; r=p.add_run(text); r.font.size=Pt(fontsize)
         elif i==2:
             p.alignment=WD_ALIGN_PARAGRAPH.RIGHT; r=p.add_run(f'({number})'); r.font.size=Pt(12)
+    set_table_grid(t, widths)
     tblPr=t._tbl.tblPr
     borders=OxmlElement('w:tblBorders')
     for edge in ('top','left','bottom','right','insideH','insideV'):
         el=OxmlElement('w:'+edge); el.set(qn('w:val'),'nil'); borders.append(el)
-    tblPr.append(borders)
+    old=tblPr.find(qn('w:tblBorders'))
+    if old is not None: tblPr.remove(old)
+    tblPr.insert_element_before(borders,'w:shd','w:tblLayout','w:tblCellMar','w:tblLook')
+    for c in t.rows[0].cells:
+        tcPr=c._tc.get_or_add_tcPr()
+        tb=OxmlElement('w:tcBorders')
+        for edge in ('top','left','bottom','right','insideH','insideV'):
+            el=OxmlElement('w:'+edge); el.set(qn('w:val'),'nil'); tb.append(el)
+        tcPr.insert_element_before(tb,'w:shd','w:noWrap','w:tcMar','w:textDirection','w:tcFitText','w:vAlign','w:hideMark')
+    prev=t._tbl.getprevious()
+    if prev is not None and prev.tag==qn('w:p'):
+        Paragraph(prev, doc).paragraph_format.keep_with_next=True
 
 def add_page_field(p):
     p.alignment=WD_ALIGN_PARAGRAPH.CENTER
@@ -125,13 +217,79 @@ def add_page_field(p):
     end=OxmlElement('w:fldChar'); end.set(qn('w:fldCharType'),'end')
     r._r.extend([begin,instr,sep,txt,end])
 
-def add_toc_field(p):
-    r=p.add_run(); b=OxmlElement('w:fldChar'); b.set(qn('w:fldCharType'),'begin')
-    it=OxmlElement('w:instrText'); it.set(qn('xml:space'),'preserve'); it.text=' TOC \\o "1-2" \\h \\z \\u '
-    s=OxmlElement('w:fldChar'); s.set(qn('w:fldCharType'),'separate')
-    t=OxmlElement('w:t'); t.text='Оглавление обновляется при открытии документа в Word.'
-    e=OxmlElement('w:fldChar'); e.set(qn('w:fldCharType'),'end')
-    r._r.extend([b,it,s,t,e])
+TOC_ITEMS = [
+    (1, 'ПЕРЕЧЕНЬ СОКРАЩЕНИЙ И ОБОЗНАЧЕНИЙ'),
+    (1, 'ВВЕДЕНИЕ'),
+    (1, '1 Цель и задачи исследования (пункт 1 задания)'),
+    (1, '2 Проверяемые гипотезы исследования (пункт 2 задания)'),
+    (1, '3 План исследования (пункт 3 задания)'),
+    (1, '4 Подготовка и валидация данных (пункт 4 задания)'),
+    (2, '4.1 Состав и проверка исходных данных'),
+    (2, '4.2 Формирование номинального показателя «Сторона света»'),
+    (2, '4.3 Стандартизация показателей'),
+    (1, '5 Описательная статистика (пункт 5 задания)'),
+    (1, '6 Графическое исследование распределений (пункт 6 задания)'),
+    (1, '7 Взаимосвязи переменных (пункт 7 задания)'),
+    (1, '8 Выводы по гипотезам (пункт 8 задания)'),
+    (1, '9 Проверка гипотезы о равенстве среднего и медианы (пункт 9 задания)'),
+    (1, '10 Построение регрессионной модели (пункт 10 задания)'),
+    (1, '11 Адекватность модели, её качество и значимость факторов (пункт 11 задания)'),
+    (1, '12 Модификация модели (пункт 12 задания)'),
+    (1, '13 Прогностические способности на тестовом множестве (пункт 13 задания)'),
+    (1, '14 Итоговый вывод и чувствительность метода к качеству данных (пункт 14 задания)'),
+    (1, 'ЗАКЛЮЧЕНИЕ'),
+    (1, 'СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ'),
+]
+
+TOC_PAGES_DEFAULT = {
+    'ПЕРЕЧЕНЬ СОКРАЩЕНИЙ И ОБОЗНАЧЕНИЙ': 3,
+    'ВВЕДЕНИЕ': 4,
+    '1 Цель и задачи исследования (пункт 1 задания)': 5,
+    '2 Проверяемые гипотезы исследования (пункт 2 задания)': 6,
+    '3 План исследования (пункт 3 задания)': 7,
+    '4 Подготовка и валидация данных (пункт 4 задания)': 8,
+    '4.1 Состав и проверка исходных данных': 8,
+    '4.2 Формирование номинального показателя «Сторона света»': 9,
+    '4.3 Стандартизация показателей': 9,
+    '5 Описательная статистика (пункт 5 задания)': 10,
+    '6 Графическое исследование распределений (пункт 6 задания)': 12,
+    '7 Взаимосвязи переменных (пункт 7 задания)': 16,
+    '8 Выводы по гипотезам (пункт 8 задания)': 19,
+    '9 Проверка гипотезы о равенстве среднего и медианы (пункт 9 задания)': 20,
+    '10 Построение регрессионной модели (пункт 10 задания)': 21,
+    '11 Адекватность модели, её качество и значимость факторов (пункт 11 задания)': 23,
+    '12 Модификация модели (пункт 12 задания)': 25,
+    '13 Прогностические способности на тестовом множестве (пункт 13 задания)': 26,
+    '14 Итоговый вывод и чувствительность метода к качеству данных (пункт 14 задания)': 28,
+    'ЗАКЛЮЧЕНИЕ': 29,
+    'СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ': 30,
+}
+
+def add_toc(doc, items, pages):
+    first = True
+    last_p = None
+    for level, text in items:
+        p = doc.add_paragraph()
+        pf = p.paragraph_format
+        pf.first_line_indent = Cm(0)
+        pf.left_indent = Cm(0 if level == 1 else 0.42)
+        pf.space_after = Pt(5)
+        pf.line_spacing = 1.0
+        pf.tab_stops.add_tab_stop(Cm(16.3), WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS)
+        if first:
+            r = p.add_run()
+            b = OxmlElement('w:fldChar'); b.set(qn('w:fldCharType'), 'begin')
+            it = OxmlElement('w:instrText'); it.set(qn('xml:space'), 'preserve'); it.text = ' TOC \\o "1-2" \\h \\z \\u '
+            s = OxmlElement('w:fldChar'); s.set(qn('w:fldCharType'), 'separate')
+            r._r.extend([b, it, s])
+            first = False
+        r1 = p.add_run(text); r1.font.size = Pt(11)
+        r2 = p.add_run('\t' + str(pages.get(text, '?'))); r2.font.size = Pt(11)
+        last_p = p
+    if last_p is not None:
+        r = last_p.add_run()
+        e = OxmlElement('w:fldChar'); e.set(qn('w:fldCharType'), 'end')
+        r._r.append(e)
 
 doc=Document()
 sec=doc.sections[0]; sec.page_width=Cm(21); sec.page_height=Cm(29.7); sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(3); sec.right_margin=Cm(1.5)
@@ -140,69 +298,108 @@ sec.different_first_page_header_footer=True
 styles=doc.styles
 for stylename in ['Normal','Title','Subtitle','Heading 1','Heading 2','Heading 3']:
     st=styles[stylename]; st.font.name='Times New Roman'; st._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
-styles['Normal'].font.size=Pt(14); styles['Normal'].font.color.rgb=RGBColor(0,0,0); styles['Normal'].paragraph_format.line_spacing=1.5; styles['Normal'].paragraph_format.space_after=Pt(0); styles['Normal'].paragraph_format.first_line_indent=Cm(1.25)
+styles['Normal'].font.size=Pt(12); styles['Normal'].font.color.rgb=RGBColor(0,0,0); styles['Normal'].paragraph_format.line_spacing=1.5; styles['Normal'].paragraph_format.space_after=Pt(0); styles['Normal'].paragraph_format.first_line_indent=Cm(1.25)
 styles['Heading 1'].font.size=Pt(14); styles['Heading 1'].font.bold=True; styles['Heading 1'].font.color.rgb=RGBColor(0,0,0)
 styles['Heading 2'].font.size=Pt(14); styles['Heading 2'].font.bold=True; styles['Heading 2'].font.color.rgb=RGBColor(0,0,0)
 styles['Title'].font.size=Pt(18); styles['Title'].font.bold=True; styles['Title'].font.color.rgb=RGBColor(0,0,0)
 add_page_field(sec.footer.paragraphs[0])
 
 # Title page
-p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.space_before=Pt(12)
-p.add_run('______________________________________________\nНаименование образовательной организации\n______________________________________________\nНаименование кафедры / факультета').font.size=Pt(12)
-p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.space_before=Pt(24)
-p.add_run('ОТЧЕТ ПО ПРИКЛАДНОМУ РЕГРЕССИОННОМУ АНАЛИЗУ').bold=True
-p.runs[0].font.size=Pt(16)
-p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.space_before=Pt(35)
-r=p.add_run('Затраты на технологические инновации\nв регионах России в 2014 году'); r.bold=True; r.font.size=Pt(16)
-p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.add_run('Вариант 31\nЗадания 1 и 2').font.size=Pt(14)
-for _ in range(3): doc.add_paragraph()
-p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
-p.add_run('Выполнил: Прудников Борис Евгеньевич\nГруппа: ____________________\nПроверил: __________________').font.size=Pt(12)
-for _ in range(3): doc.add_paragraph()
-p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.add_run('2026').font.size=Pt(12)
+p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.first_line_indent=Cm(0); p.paragraph_format.space_after=Pt(14)
+r=p.add_run('ОТЧЁТ ПО ДОМАШНЕМУ ЗАДАНИЮ'); r.bold=True; r.font.size=Pt(16)
+p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.first_line_indent=Cm(0); p.paragraph_format.space_after=Pt(14)
+r=p.add_run('Регрессионный анализ региональных данных'); r.bold=True; r.font.size=Pt(14)
+p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.first_line_indent=Cm(0); p.paragraph_format.space_after=Pt(14)
+r=p.add_run('Затраты на технологические инновации и экономические показатели регионов России за 2014 год'); r.font.size=Pt(14)
+p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.first_line_indent=Cm(0); p.paragraph_format.space_after=Pt(14)
+p.add_run('Части 1 и 2 (пункты 1–14)').font.size=Pt(12)
+p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT; p.paragraph_format.first_line_indent=Cm(0); p.paragraph_format.space_after=Pt(8)
+p.add_run('Выполнил: Прудников Борис Евгеньевич').font.size=Pt(12)
+p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT; p.paragraph_format.first_line_indent=Cm(0); p.paragraph_format.space_after=Pt(8)
+p.add_run('Группа: ____________________').font.size=Pt(12)
+p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.first_line_indent=Cm(0); p.paragraph_format.space_before=Pt(405); p.paragraph_format.space_after=Pt(8)
+p.add_run('Москва — 2026').font.size=Pt(12)
 
-heading(doc,'Содержание',1); add_toc_field(doc.add_paragraph())
-heading(doc,'Реферат',1)
-para(doc,'В отчете исследуется связь затрат регионов России на технологические инновации с валовым региональным продуктом (ВРП), внутренними затратами на исследования и разработки (НИР) и федеральным округом. Используются поперечные данные за 2014 год. После очистки и сопоставления источников получено 79 полных наблюдений; пять регионов заранее отложены для проверки прогноза, а 74 использованы для построения моделей. Линейная модель в уровнях статистически значима в целом, но отдельный эффект ВРП при контроле НИР и округа статистически не подтвержден. Логарифмическая модификация лучше описывает обучающую выборку, однако хуже прогнозирует пять тестовых регионов. Поэтому прогнозные результаты следует трактовать осторожно.')
+heading(doc,'Оглавление',1)
+toc_pages = dict(TOC_PAGES_DEFAULT)
+if os.environ.get('TOC_PAGES'):
+    toc_pages.update(json.loads(Path(os.environ['TOC_PAGES']).read_text(encoding='utf-8')))
+add_toc(doc, TOC_ITEMS, toc_pages)
 heading(doc,'Перечень сокращений и обозначений',1)
 para(doc,'В настоящем отчете применяются следующие сокращения и обозначения:')
 table(doc,['Обозначение','Показатель','Единица / способ учета'],[
 ['Y','Затраты на технологические (продуктовые и процессные) инновации','млн руб.; зависимая переменная'],
 ['X₁','Валовой региональный продукт','млн руб.; количественный фактор'],
 ['X₂','Внутренние затраты на исследования и разработки (НИР)','млн руб.; количественный фактор'],
-['D','Федеральный округ','категориальный признак; фиктивные переменные, базовая категория — Дальневосточный ФО'],
-],caption='Обозначения и показатели исследования')
-para(doc,'Единица наблюдения — субъект Российской Федерации. Период фиксирован: 2014 год; это пространственный срез, а не временной ряд. Москва, Санкт-Петербург и Севастополь рассматриваются как отдельные субъекты. Архангельская область без Ненецкого автономного округа и Тюменская область без автономных округов не смешиваются с соответствующими автономными округами.')
+['D','Сторона света','категориальный признак (Север, Юг, Запад, Восток) по координатам административных центров; фиктивные переменные, базовая категория — Запад'],
+],caption='Обозначения и показатели исследования',widths=[2.3,5.2,9.0])
+para(doc,'Единица наблюдения — субъект Российской Федерации. Период фиксирован: 2014 год; это пространственный срез, а не временной ряд. Москва, Санкт-Петербург и Севастополь рассматриваются как отдельные субъекты. Архангельская область без Ненецкого автономного округа и Тюменская область без автономных округов не смешиваются с соответствующими автономными округами. Сторона света определена по координатам административных центров: Север — широта не ниже 60° с. ш.; Восток — остальные регионы с долготой не менее 60° в. д.; Юг — остальные регионы с широтой менее 50° с. ш.; Запад — остальные регионы европейской части (базовая категория).')
 
 heading(doc,'Введение',1)
 para(doc,'Региональные затраты на технологические инновации характеризуют вовлеченность субъектов РФ в обновление продукции и производственных процессов. Для управленческих решений важно понимать, связаны ли такие затраты с общим масштабом экономики региона, его расходами на исследования и разработки, а также территориальными различиями. В работе проверяется статистическая связь по данным 2014 года; выводы относятся к указанному срезу и не устанавливают причинность.')
-para(doc,'Пункты первого задания представлены подразделами 1.1–1.6, пункты второго задания — подразделами 2.1–2.8.')
+para(doc,'Пункты задания представлены разделами 1–14; разделы 4.1–4.3 раскрывают подготовку и проверку данных.')
 
-heading(doc,'1 Подготовка данных и первичный анализ',1)
-heading(doc,'1.1 Цель и задачи исследования (пункт 1 задания)',2)
-para(doc,'Экономическая постановка задачи: оценить, как масштабы региональной экономики, расходы на НИР и территориальная принадлежность связаны с затратами на технологические инновации в 2014 году, и определить, насколько найденная зависимость пригодна для прогноза по регионам.')
+heading(doc,'1 Цель и задачи исследования (пункт 1 задания)',1)
+para(doc,'Экономическая постановка задачи: оценить, как масштабы региональной экономики, расходы на НИР и принадлежность региона к стороне света связаны с затратами на технологические инновации в 2014 году, и определить, насколько найденная зависимость пригодна для прогноза по регионам.')
 para(doc,'Цель исследования — построить интерпретируемую регрессионную модель затрат на технологические инновации по данным российских регионов за 2014 год и проверить ее статистическую обоснованность и прогнозную точность.')
-para(doc,'Задачи: очистить и объединить официальные таблицы Росстата; описать переменные и их распределения; исследовать корреляции; проверить исходные гипотезы; оценить и диагностировать линейную модель; предложить модификацию; сравнить прогнозы на заранее отложенных регионах.')
+para(doc,'Для достижения цели поставлены следующие задачи:')
+for _i, _task in enumerate([
+    'Сформировать единый набор показателей регионов за 2014 год, включая номинальный показатель «Сторона света».',
+    'Проверить пропуски, типы, допустимые значения и отсутствие дублирующихся наблюдений; выделить пять контрольных регионов.',
+    'Рассчитать описательные статистики и исследовать распределения показателей.',
+    'Охарактеризовать взаимосвязи переменных и сделать выводы по исходным гипотезам.',
+    'Проверить гипотезу о равенстве генерального среднего значению медианы.',
+    'Построить регрессионную модель, оценить её адекватность, качество и значимость факторов.',
+    'Предложить модификацию модели и сравнить варианты, в том числе по точности прогноза на контрольных регионах.',
+    'Сформулировать итоговые выводы и оценить чувствительность метода к качеству данных.',
+], 1):
+    para(doc, f'{_i}) {_task}')
 
-heading(doc,'1.2 Проверяемые гипотезы (пункт 2 задания)',2)
-para(doc,'Основная экономическая гипотеза: при прочих равных более высокий ВРП связан с большими затратами региона на технологические инновации. Для коэффициента ВРП в линейной модели проверяется направленная гипотеза H₀: β₁ ≤ 0 против H₁: β₁ > 0 при уровне значимости α = 0,05. Дополнительная проверка модели: H₀: все коэффициенты наклона равны нулю против H₁: хотя бы один коэффициент отличен от нуля. Для пункта 9 проверяется равенство генерального среднего затрат медиане: H₀: μ = Med против H₁: μ ≠ Med.')
+heading(doc,'2 Проверяемые гипотезы исследования (пункт 2 задания)',1)
+para(doc,'Основная гипотеза Г1: при прочих равных более высокий ВРП связан с большими затратами региона на технологические инновации.')
+para(doc,'Дополнительные гипотезы:')
+para(doc,'Г2 — при прочих равных более высокие внутренние затраты на НИР связаны с большими затратами на технологические инновации.')
+para(doc,'Г3 — средние затраты на технологические инновации различаются по сторонам света (Север, Юг, Запад, Восток).')
+para(doc,'Статистически гипотеза Г1 проверяется как H₀: β₁ ≤ 0 против H₁: β₁ > 0 при уровне значимости α = 0,05; гипотеза Г2 — как H₀: β₂ = 0 против H₁: β₂ ≠ 0; гипотеза Г3 — как H₀: γСевер = γЮг = γВосток = 0 против H₁: хотя бы один коэффициент при индикаторе стороны света отличен от нуля. Дополнительная проверка модели: H₀: все коэффициенты наклона равны нулю против H₁: хотя бы один коэффициент отличен от нуля. Для пункта 9 проверяется равенство генерального среднего затрат медиане: H₀: μ = Med против H₁: μ ≠ Med.')
 
-heading(doc,'1.3 План-схема исследования (пункт 3 задания)',2)
-table(doc,['Этап','Содержание','Результат'],[
-['1','Загрузить исходные таблицы Росстата за 2014 год','Три исходных файла'],['2','Удалить итоги, округа и служебные строки; сверить территории','Единая таблица регионов'],['3','Отложить 5 полных наблюдений; на остальных описать данные','74 наблюдения для обучения, 5 для теста'],['4','Изучить распределения, квартильные характеристики и корреляции','Описательная и графическая сводка'],['5','Оценить линейную модель и проверить предпосылки','Коэффициенты, интервалы, тесты и диагностика'],['6','Построить логарифмическую модификацию и сравнить прогнозы','Сравнение моделей на одном тесте'],['7','Сформулировать экономические выводы и ограничения','Итоговое заключение для пользователя']],caption='Этапы исследования и ожидаемые результаты')
+heading(doc,'3 План исследования (пункт 3 задания)',1)
+para(doc,'Исследование выполнено в следующей последовательности:')
+for _i, _stage in enumerate([
+    'Постановка цели и содержательных гипотез — формулировка цели, задач и гипотез Г1–Г3.',
+    'Выбор показателей и источников данных; формирование номинального показателя «Сторона света» — три таблицы Росстата и координаты административных центров.',
+    'Объединение показателей, очистка названий регионов, удаление итоговых строк — единая таблица регионов.',
+    'Проверка данных и выделение пяти контрольных регионов — обучающая выборка 74 наблюдения, контрольная 5.',
+    'Описательная статистика, исследование распределений и выбросов — средние, медианы, квартили, коэффициент вариации, гистограммы.',
+    'Корреляционный анализ и выводы по гипотезам; выбор формы переменных — матрица Пирсона, Спирмен, ANOVA по сторонам света.',
+    'Проверка гипотезы о равенстве среднего значению медианы — бутстрэп-интервал для разности.',
+    'Построение базовой регрессионной модели и проверка её адекватности — коэффициенты, F-тест, VIF, RESET, анализ остатков.',
+    'Модификация модели и сравнение вариантов — логарифмическая спецификация и сопоставление R².',
+    'Прогноз для контрольных регионов, итоговые выводы — RMSE, MAE, MAPE и интервалы прогноза.',
+], 1):
+    para(doc, f'{_i}. {_stage}')
 
-heading(doc,'1.4 Валидация, очистка и преобразование данных (пункт 4 задания)',2)
+heading(doc,'4 Подготовка и валидация данных (пункт 4 задания)',1)
+heading(doc,'4.1 Состав и проверка исходных данных',2)
 para(doc,'Использованы три таблицы Росстата: затраты на технологические инновации [1], ВРП [2] и внутренние затраты на НИР [3]. Их официальные тематические разделы — «Наука, инновации и технологии» и «Национальные счета» [4, 5]. Год во всех источниках — 2014. В исходной таблице инноваций денежные значения приведены в тысячах рублей; для единообразия их поделили на 1 000 и выразили в миллионах рублей. ВРП и НИР уже представлены в миллионах рублей.')
-para(doc,'Удалены общероссийский итог, федеральные округа как агрегаты, подстроки «в том числе», заголовки и служебные записи. Названия регионов нормализованы (пробелы, «ё/е», сокращения, скобки и варианты написания) и использованы для сопоставления строк между файлами. В качестве отдельного номинального признака добавлен федеральный округ. Его уровни кодировались в регрессии индикаторами; базовый уровень — Дальневосточный федеральный округ.')
-para(doc,'После очистки таблица инноваций дала 84 региональные записи-кандидата; полные значения всех трех денежных показателей удалось сопоставить для 79 территорий. Пять неполных записей — Ненецкий автономный округ, Тюменская область без автономных округов, Ханты-Мансийский автономный округ — Югра, Еврейская автономная область и Чукотский автономный округ — исключены без импутации. Причина — отсутствие надежно сопоставленного значения хотя бы одного фактора в объединенных таблицах. Это уменьшает охват генеральной совокупности и является ограничением анализа.')
+para(doc,'Удалены общероссийский итог, федеральные округа как агрегаты, подстроки «в том числе», заголовки и служебные записи. Названия регионов нормализованы (пробелы, «ё/е», сокращения, скобки и варианты написания) и использованы для сопоставления строк между файлами.')
+para(doc,'После очистки таблица инноваций дала 84 региональные записи-кандидата; полные значения всех трех денежных показателей удалось сопоставить для 79 территорий. Пять неполных записей — Ненецкий автономный округ, Тюменская область без автономных округов, Ханты-Мансийский автономный округ — Югра, Еврейская автономная область и Чукотский автономный округ — исключены без импутации. Причина — отсутствие надежно сопоставленного значения хотя бы одного фактора в объединенных таблицах. Кроме того, в выборку не вошла Архангельская область: в таблице инноваций она представлена и вместе с Ненецким автономным округом, и без него, а в таблице ВРП — только без округа, поэтому однозначно сопоставить территориальный охват не удалось. Это уменьшает охват генеральной совокупности и является ограничением анализа; в частности, группа «Север» остается малочисленной.')
 para(doc,'До расчета описательных статистик из 79 полных наблюдений случайно отобраны пять регионов для тестирования (генератор с фиксированным seed=31): Владимирская область, Приморский край, Республика Башкортостан, Республика Калмыкия и Удмуртская Республика. Эти наблюдения не использовались при выборе оценок и модели. Обучающая выборка включает 74 региона. Числовые значения проверены на пропуски и отрицательные числа; отрицательных значений нет. Нулевые значения по денежным показателям оставлялись бы нулями, а не трактовались как пропуски; для выбранных 79 наблюдений значения положительны.')
+heading(doc,'4.2 Формирование номинального показателя «Сторона света»',2)
+para(doc,'В качестве отдельного номинального признака добавлена сторона света. Она определена по координатам административных центров: Север — широта не ниже 60° с. ш.; Восток — остальные регионы с долготой не менее 60° в. д.; Юг — остальные регионы с широтой менее 50° с. ш.; Запад — остальные регионы европейской части. Для Ленинградской и Московской областей использованы координаты Санкт-Петербурга и Москвы. Состав групп и численность приведены в таблице ниже. Уровни признака кодировались в регрессии индикаторами; базовый уровень — Запад. Федеральный округ сохранен в сводной таблице как справочный реквизит, но в модели не используется.')
+table(doc,['Сторона света','Правило отнесения по координатам центра','Регионов всего','В обучающей выборке'],[
+ ['Запад','широта < 60°, долгота < 60°, широта ≥ 50°','38','35'],
+ ['Север','широта ≥ 60°','5','5'],
+ ['Юг','широта < 50° (после отнесения к Северу и Востоку)','15','14'],
+ ['Восток','долгота ≥ 60° (после отнесения к Северу)','21','20'],
+ ['Итого','—','79','74']],caption='Группировка регионов по сторонам света',widths=[2.6,7.6,2.8,3.5])
+heading(doc,'4.3 Стандартизация показателей',2)
 para(doc,'Для сопоставимости показателей дополнительно вычислены z-оценки z=(x−среднее)/s на обучающей выборке. Они использованы как диагностическое преобразование; в основной модели оставлены исходные единицы, чтобы коэффициенты сохраняли экономическую интерпретацию. Логарифмирование использовано только как отдельная модификация, поскольку все денежные показатели обучающей выборки положительны. Пропуски не заполнялись средними или иными искусственными значениями.')
 
-heading(doc,'1.5 Описательная статистика (пункт 5 задания)',2)
+heading(doc,'5 Описательная статистика (пункт 5 задания)',1)
 stats=read_csv('05_описательная_статистика.csv')
-table(doc,['Показатель','n','Среднее','Медиана','Станд. отклонение','CV'],[[r['Показатель'],r['N'],val(r['Среднее']),val(r['Медиана']),val(r['Стандартное отклонение']),val(r['Коэффициент вариации_%'],1)+'%'] for r in stats],caption='Описательная статистика показателей обучающей выборки',font=9)
+table(doc,['Показатель','n','Среднее','Медиана','Станд. отклонение','CV'],[[r['Показатель'],r['N'],val(r['Среднее']),val(r['Медиана']),val(r['Стандартное отклонение']),val(r['Коэффициент вариации_%'],1)+'%'] for r in stats],caption='Описательная статистика показателей обучающей выборки',font=8,widths=[6.7,1.1,2.2,2.2,2.2,2.1])
 para(doc,'Квартильные характеристики и межквартильный размах представлены отдельно, чтобы сохранить читаемость таблицы.')
-table(doc,['Показатель','Минимум','Q1 (25%)','Q2 (50%)','Q3 (75%)','IQR','Максимум'],[[r['Показатель'],val(r['Минимум']),val(r['Q1_25%']),val(r['Q2_50%']),val(r['Q3_75%']),val(r['IQR']),val(r['Максимум'])] for r in stats],caption='Квартили и межквартильный размах',font=9)
+table(doc,['Показатель','Минимум','Q1 (25%)','Q2 (50%)','Q3 (75%)','IQR','Максимум'],[[r['Показатель'],val(r['Минимум']),val(r['Q1_25%']),val(r['Q2_50%']),val(r['Q3_75%']),val(r['IQR']),val(r['Максимум'])] for r in stats],caption='Квартили и межквартильный размах',font=8,widths=[3.6,2.0,2.1,2.1,2.1,2.2,2.4])
 para(doc,'Затраты на технологические инновации: среднее 14 861,848 млн руб. выше медианы 3 602,584 млн руб.; стандартное отклонение 29 889,950 млн руб., CV=201,1%. Распределение сильно неоднородно и смещено вправо; среднее заметно чувствительно к крупным регионам.')
 para(doc,'ВРП: среднее 704 813,273 млн руб., медиана 321 536,350 млн руб., s=1 526 348,868 млн руб., CV=216,6%. Разброс очень высок, что ожидаемо при различиях масштабов региональной экономики; среднее не описывает типичный регион без учета асимметрии.')
 para(doc,'Внутренние затраты на НИР: среднее 11 034,276 млн руб., медиана 1 379,964 млн руб., s=38 349,254 млн руб., CV=347,5%. Это наиболее вариативный показатель: ресурсы исследований сосредоточены в небольшом числе регионов.')
@@ -211,30 +408,36 @@ equation(doc,'CV = s / x̄ · 100 %',1)
 equation(doc,'IQR = Q₃ − Q₁',2)
 para(doc,'По правилу Тьюки потенциальными выбросами считаются значения за пределами [Q1−1,5·IQR; Q3+1,5·IQR]. Такие наблюдения не удалялись автоматически: высокий показатель крупного региона может быть реальным и экономически содержательным. Влияние наиболее заметного наблюдения дополнительно проверено расстоянием Кука (см. пункт 11).')
 
-heading(doc,'1.6 Графическое исследование распределений (пункт 6 задания)',2)
+heading(doc,'6 Графическое исследование распределений (пункт 6 задания)',1)
 figure(doc,'hist_innovation_mln.png','Рисунок 1 — Распределение затрат на технологические инновации в обучающей выборке.')
 para(doc,'Гистограмма показывает правую асимметрию: у большинства регионов затраты сравнительно невелики, а несколько крупных значений формируют длинный правый хвост.')
 figure(doc,'hist_grp_mln.png','Рисунок 2 — Распределение ВРП регионов в обучающей выборке.')
 figure(doc,'hist_rd_mln.png','Рисунок 3 — Распределение внутренних затрат на НИР в обучающей выборке.')
 para(doc,'Распределения ВРП и НИР также имеют выраженную правую асимметрию и высокие значения отдельных субъектов. Наблюдения не удалялись только на основании внешнего вида графиков.')
-figure(doc,'regions_by_district.png','Рисунок 4 — Число регионов обучающей выборки по федеральным округам.')
-figure(doc,'district_share_pie.png','Рисунок 5 — Доли федеральных округов в обучающей выборке.')
-para(doc,'Столбчатая и круговая диаграммы описывают состав обучающей выборки по номинальному признаку. Число регионов по округам неодинаково; при сравнении округов регрессия учитывает индикаторные переменные и базовую категорию.')
+figure(doc,'sides_map.png','Рисунок 4 — Распределение регионов обучающей выборки по сторонам света по координатам административных центров.')
+figure(doc,'side_share_pie.png','Рисунок 5 — Доли сторон света в обучающей выборке.')
+para(doc,'На рисунке 4 показано разделение регионов по координатам административных центров: штриховые линии соответствуют порогам 60° с. ш., 50° с. ш. и 60° в. д. На Запад приходится 47 % обучающей выборки, на Восток — 27 %, на Юг — 19 %, на Север — 7 %. Север малочислен (5 регионов), поскольку Архангельская область и северные автономные округа не имеют полного набора сопоставимых показателей. При сравнении сторон света регрессия учитывает индикаторные переменные и базовую категорию «Запад».')
 
-heading(doc,'2 Анализ взаимосвязей, регрессия и прогноз',1)
-heading(doc,'2.1 Взаимосвязи переменных (пункт 7 задания)',2)
+heading(doc,'7 Взаимосвязи переменных (пункт 7 задания)',1)
 corr=read_csv('06_корреляции.csv'); corr2=read_csv('06a_ранговые_корреляции.csv')
-table(doc,['Показатель','Инновации','ВРП','НИР'],[[r['Показатель'],val(r['innovation_mln'],3),val(r['grp_mln'],3),val(r['rd_mln'],3)] for r in corr],caption='Матрица корреляций Пирсона',font=9)
+table(doc,['Показатель','Инновации','ВРП','НИР'],[[CORR_LABELS.get(r['Показатель'],r['Показатель']),val(r['innovation_mln'],3),val(r['grp_mln'],3),val(r['rd_mln'],3)] for r in corr],caption='Матрица корреляций Пирсона',widths=[4.8,3.9,3.9,3.9])
 para(doc,'Коэффициент Пирсона между инновационными затратами и ВРП равен 0,815, между инновациями и НИР — 0,822, между ВРП и НИР — 0,954. Это сильные положительные парные связи. Высокая корреляция ВРП и НИР предупреждает о возможной мультиколлинеарности и затрудняет отделение их индивидуальных эффектов.')
 para(doc,'Ранговые коэффициенты Спирмена между инновациями и ВРП равны 0,833, между инновациями и НИР — 0,806, между ВРП и НИР — 0,774. Положительные ранговые связи сохраняются, но величина связи ВРП–НИР существенно ниже, чем по Пирсону; экстремальные масштабы и нелинейность влияют на линейные корреляции.')
+corr_sig=read_csv('06b_значимость_корреляций.csv')
+table(doc,['Пара','r Пирсона','t','p-value','r Спирмена','t','p-value'],[[r['Пара'],val(r['r_Пирсона'],3),val(r['t_Пирсона'],3),fmt_p(r['p_Пирсона']),val(r['r_Спирмена'],3),val(r['t_Спирмена'],3),fmt_p(r['p_Спирмена'])] for r in corr_sig],caption='Проверка значимости коэффициентов корреляции (df = 72)',font=8,widths=[4.0,2.2,2.0,2.4,2.2,2.0,1.7])
+para(doc,'Все парные коэффициенты значимы на уровне 0,05: расчетные t-статистики (от 10,36 до 26,86) превышают критическое значение tкр(0,975;72)=1,9935, p-value меньше 0,001. Ранговые коэффициенты Спирмена также значимы, что подтверждает устойчивость направления связей к выбросам.')
+anova_sides=read_csv('07a_anova_по_сторонам.csv')
+table(doc,['Источник','SS','df','MS','F','p-value','η²'],[
+ [r['Источник'],val(r['SS'],0),r['df'],val(r['MS'],0) if r['MS'] else '—',val(r['F'],3) if r['F'] else '—',fmt_p(r['p_value']) if r['p_value'] else '—',val(r['eta2'],3) if r['eta2'] else '—'] for r in anova_sides],caption='Дисперсионный анализ затрат по сторонам света',font=8,widths=[5.0,3.2,1.2,3.0,1.8,1.5,1.5])
+para(doc,'Различие среднего уровня затрат по сторонам света статистически не подтверждается: F=1,380 меньше Fкр(0,05;3;70)=2,736, p=0,256; сторона света объясняет лишь 5,6 % вариации (η²=0,056). Средние затраты составляют 21 438,5 млн руб. на Западе, 13 145,0 млн руб. на Востоке, 5 525,3 млн руб. на Юге и 1 835,1 млн руб. на Севере. Разброс внутри групп очень велик (особенно на Западе, где находится Москва), поэтому сам по себе географический признак слабо различает регионы.')
 figure(doc,'correlation_matrix.png','Рисунок 6 — Матрица корреляций Пирсона для количественных показателей.')
 figure(doc,'scatterplots.png','Рисунок 7 — Диаграммы рассеяния затрат на инновации относительно ВРП и НИР.')
 para(doc,'Диаграммы рассеяния показывают общий восходящий рисунок, но также сильную концентрацию регионов у нижней части шкалы и несколько удаленных точек. Парную корреляцию нельзя интерпретировать как причинный эффект; далее рассматривается условная связь в регрессионной модели.')
 
-heading(doc,'2.2 Вывод по исходной гипотезе (пункт 8 задания)',2)
-para(doc,'Описательная и корреляционная части согласуются с предположением о положительной связи масштаба экономики и затрат на инновации: r Пирсона=0,815, ρ Спирмена=0,833. Однако это парные связи без контроля других характеристик. В регрессии при одновременном учете НИР и федерального округа оценка коэффициента ВРП положительна, но ее статистическая значимость отдельно не подтверждается на уровне 0,05 (t=1,284; одностороннее p=0,102). Поэтому исходная гипотеза получает описательную поддержку, но не подтверждается как самостоятельный условный эффект в линейной модели.')
+heading(doc,'8 Выводы по гипотезам (пункт 8 задания)',1)
+para(doc,'Описательная и корреляционная части согласуются с предположением о положительной связи масштаба экономики и затрат на инновации: r Пирсона=0,815, ρ Спирмена=0,833. Однако это парные связи без контроля других характеристик. В регрессии при одновременном учете НИР и стороны света оценка коэффициента ВРП положительна: t=1,813 при df=68. Для направленной альтернативы β₁>0 критическое значение tкр(0,95;68)=1,668, одностороннее p=0,0371, поэтому H₀ о неположительном коэффициенте отвергается на уровне 0,05. При двусторонней проверке p=0,0742, то есть на 5%-м уровне значимость не достигается. Кроме того, VIF коэффициента ВРП равен 11,7, а при исключении Москвы оценка возрастает более чем втрое. Следовательно, исходная гипотеза подтверждается только в односторонней постановке и требует осторожной интерпретации.')
 
-heading(doc,'2.3 Проверка гипотезы о равенстве среднего и медианы (пункт 9 задания)',2)
+heading(doc,'9 Проверка гипотезы о равенстве среднего и медианы (пункт 9 задания)',1)
 para(doc,'Проверялась H₀: μ−Med=0 против H₁: μ−Med≠0 для затрат на инновации в обучающей выборке (n=74). Из-за сильной асимметрии использована непараметрическая бутстрэп-процедура с 10 000 повторными выборками и фиксированным seed=31. Это оценочная бутстрэп-проверка разности среднего и медианы, а не классический t-тест.')
 para(doc,'Наблюдаемая разность d̄ = x̄−Med = 14 861,848−3 602,584 = 11 259,265 млн руб. 95%-й бутстрэп-интервал для разности: [5 846,334; 18 151,637] млн руб. Ноль в интервал не входит; центрированное бутстрэп p-value=0,00130. При α=0,05 H₀ отвергается: распределение затрат асимметрично, а среднее статистически выше медианы.')
 para(doc,'Для воспроизводимости: на каждом повторе b=1,…,10 000 из n=74 наблюдений с возвращением формировалась выборка x* размера 74, вычислялась разность среднего и медианы по формуле (3). Доверительный интервал строился по эмпирическим квантилям по формуле (4). Центрированное двустороннее p-value вычислено по формуле (5). Степень свободы для классического t-статистика здесь не задается, поскольку использован бутстрэп.')
@@ -242,57 +445,70 @@ equation(doc,'d* = mean(x*) − median(x*)',3)
 equation(doc,'ДИ₉₅% = [Q₀,₀₂₅(d*), Q₀,₉₇₅(d*)]',4)
 equation(doc,'p = [1 + count(|d* − d| ≥ |d|)] / (B + 1),   B = 10 000',5)
 
-heading(doc,'2.4 Регрессионная модель (пункт 10 задания)',2)
+heading(doc,'10 Построение регрессионной модели (пункт 10 задания)',1)
 para(doc,'Основная спецификация оценена методом наименьших квадратов на n=74 регионах:')
 equation(doc,'Yᵢ = β₀ + β₁ВРПᵢ + β₂НИРᵢ + ΣⱼγⱼDⱼᵢ + εᵢ',6)
-para(doc,'В формуле (5) Y, ВРП и НИР выражены в млн руб.; Dⱼ — индикаторы федеральных округов, а Дальневосточный округ выбран базовой категорией. В данных представлены девять федеральных округов; при одном базовом округе оценены восемь индикаторов. Всего оценено 11 параметров: свободный член, два количественных коэффициента и восемь индикаторов; остаточные степени свободы df=74−11=63.')
+para(doc,'В формуле (6) Y, ВРП и НИР выражены в млн руб.; Dⱼ — индикаторы сторон света, а Запад выбран базовой категорией. В данных представлены четыре стороны света; при одной базовой категории оценены три индикатора. Всего оценено 6 параметров: свободный член, два количественных коэффициента и три индикатора; остаточные степени свободы df=74−6=68.')
 para(doc,'Оцененное уравнение (округленные коэффициенты):')
-equation(doc,'Ŷ = 6 537,174 + 0,005940ВРП + 0,418720НИР + Σⱼγ̂ⱼDⱼ',7,fontsize=10)
-para(doc,'Например, коэффициент НИР 0,4187 означает: при одинаковых ВРП и округе увеличение внутренних затрат на НИР на 1 млн руб. связано в среднем с увеличением расчетных затрат на технологические инновации примерно на 0,419 млн руб. Коэффициент ВРП в уровнях составляет 0,00594; при прочих равных дополнительные 1 000 млн руб. ВРП соответствуют примерно 5,94 млн руб. расчетных затрат на инновации. Это условная ассоциация, а не причинная оценка.')
+equation(doc,'Ŷ = 7 793,722 + 0,008059ВРП + 0,321989НИР + Σⱼγ̂ⱼDⱼ',7,fontsize=10)
+para(doc,'Например, коэффициент НИР 0,3220 означает: при одинаковых ВРП и стороне света увеличение внутренних затрат на НИР на 1 млн руб. связано в среднем с увеличением расчетных затрат на технологические инновации примерно на 0,322 млн руб. Коэффициент ВРП в уровнях составляет 0,008059; при прочих равных дополнительные 1 000 млн руб. ВРП соответствуют примерно 8,06 млн руб. расчетных затрат на инновации. Индикаторы Севера, Юга и Востока относительно Запада отрицательны (−11 804,9; −6 322,6 и −633,3), но статистически неотличимы от нуля (p=0,163; 0,251 и 0,897). Это условные ассоциации, а не причинные оценки.')
+table(doc,['Показатель','Значение'],[
+ ['Множественный R','0,837'],
+ ['R²','0,700'],
+ ['Скорректированный R²','0,678'],
+ ['Стандартная ошибка регрессии, млн руб.','16 968,606'],
+ ['Число наблюдений','74'],
+ ['Число параметров','6'],
+],caption='Регрессионная статистика линейной модели',widths=[10.5,6.0])
+anova_model=read_csv('09a_дисперсионный_анализ_модели.csv')
+table(doc,['Источник','SS','df','MS','F','p-value'],[[r['Источник'],val(r['SS'],0),r['df'],val(r['MS'],0) if r['MS'] else '—',val(r['F'],3) if r['F'] else '—',fmt_p(r['p_value']) if r['p_value'] else '—'] for r in anova_model],caption='Дисперсионный анализ линейной модели',font=8,widths=[4.4,3.6,1.2,3.6,1.8,1.9])
 models=read_csv('09_сводка_моделей.csv')
-table(doc,['Модель','n','R²','Скорр. R²','F (df₁; df₂)','p(F)','RMSE обуч.'],[[r['Модель'],r['N_обучение'],val(r['R2'],3),val(r['R2_скорректированный'],3),f"{val(r['F_расчетное'],3)} ({r['F_df_model']}; {r['F_df_resid']})",f"{num(r['F_p_value']):.3g}",val(r['RMSE_обучение'],3)] for r in models],caption='Сводные показатели оцененных регрессионных моделей',font=9)
+table(doc,['Модель','n','R²','Скорр. R²','F (df₁; df₂)','p(F)','RMSE обуч.'],[[r['Модель'],r['N_обучение'],val(r['R2'],3),val(r['R2_скорректированный'],3),f"{val(r['F_расчетное'],3)} ({r['F_df_model']}; {r['F_df_resid']})",fmt_p(r['F_p_value']),val(r['RMSE_обучение'],3)] for r in models],caption='Сводные показатели оцененных регрессионных моделей',font=8,widths=[3.0,1.1,1.6,1.9,3.3,2.6,3.0])
 coef=read_csv('08_коэффициенты_и_доверительные_интервалы.csv')
 lev=[r for r in coef if r['Модель']=='Линейная модель в уровнях']
-table(doc,['Коэффициент','Оценка','SE','t (df=63)','p-value','95% ДИ'],[[r['Коэффициент'].replace('C(district)[T.','округ: ').replace(']',''),val(r['Оценка'],5),val(r['Стандартная ошибка'],5),val(r['t_расчетное'],3),f"{num(r['p_value']):.4f}",f"[{val(r['ДИ95_нижняя'],4)}; {val(r['ДИ95_верхняя'],4)}]"] for r in lev],caption='Оценки коэффициентов линейной модели и их доверительные интервалы',font=9)
-equation(doc,'tⱼ = bⱼ / SE(bⱼ),   df = n − p = 74 − 11 = 63',8)
-equation(doc,'bⱼ ± t₁₋α/₂;₆₃ · SE(bⱼ),   tкр = 1,9983',9)
-para(doc,'Доверительный интервал коэффициента рассчитывался по формуле (9). Например, для ВРП: 0,005940 ± 1,9983·0,004625 = [−0,003303; 0,015184]. Для НИР: 0,418720 ± 1,9983·0,184745 = [0,049537; 0,787904]. Интервал ВРП включает ноль, интервал НИР — нет.')
+table(doc,['Коэффициент','Оценка','SE',f"t (df={lev[0]['df']})",'p-value','95% ДИ'],[[coef_label(r['Коэффициент']),minus(val(r['Оценка'],6)),minus(val(r['Стандартная ошибка'],6)),minus(val(r['t_расчетное'],3)),fmt_p(r['p_value']),f"[{minus(val(r['ДИ95_нижняя'],4))}; {minus(val(r['ДИ95_верхняя'],4))}]"] for r in lev],caption='Оценки коэффициентов линейной модели и их доверительные интервалы',font=8,widths=[4.4,2.7,2.2,1.5,1.7,4.0])
+equation(doc,'tⱼ = bⱼ / SE(bⱼ),   df = n − p = 74 − 6 = 68',8)
+equation(doc,'bⱼ ± t₁₋α/₂;₆₈ · SE(bⱼ),   tкр = 1,9955',9)
+para(doc,'Доверительный интервал коэффициента рассчитывался по формуле (9). Например, для ВРП: 0,008059 ± 1,9955·0,004444 = [−0,000810; 0,016928]. Для НИР: 0,321989 ± 1,9955·0,178846 = [−0,034893; 0,678871]. Интервал ВРП включает ноль, интервал НИР — тоже.')
 
-heading(doc,'2.5 Адекватность, качество и значимость факторов (пункт 11 задания)',2)
+heading(doc,'11 Адекватность модели, её качество и значимость факторов (пункт 11 задания)',1)
 equation(doc,'F = (R² / k) / [(1 − R²) / (n − p)]',10)
-para(doc,'Общая значимость основной модели проверялась по формуле (10), где R²=0,717939, k=10 степеней свободы числителя (два количественных фактора и восемь индикаторов округов), n=74, p=11 параметров, df₂=n−p=63. Подстановка: F=(0,717939/10)/((1−0,717939)/63)=16,036; Fкр(0,05;10;63)=1,985; p=7,52·10⁻¹⁴. Так как F>Fкр и p<0,05, гипотеза о нулевой значимости всех регрессоров отвергается: модель в целом статистически значима.')
-para(doc,'Частная проверка ВРП выполнялась по формуле (8): t=0,005940/0,004625=1,284 при df=63. Для направленной альтернативы β₁>0 критическое значение tкр(0,95;63)=1,669; одностороннее p=0,1019. Поскольку t<tкр и p>0,05, H₀ о неположительном коэффициенте не отвергается. Для НИР двусторонний t=0,418720/0,184745=2,266, p=0,0269; при прочих равных его коэффициент положителен и значим на 5%-м уровне. Индивидуальные тесты округов приведены в таблице коэффициентов; они сравнивают каждый округ с базовым Дальневосточным округом.')
+para(doc,'Общая значимость основной модели проверялась по формуле (10), где R²=0,699788, k=5 степеней свободы числителя (два количественных фактора и три индикатора сторон света), n=74, p=6 параметров, df₂=n−p=68. Подстановка: F=(0,699788/5)/((1−0,699788)/68)=31,701; Fкр(0,05;5;68)=2,350; p=1,60·10⁻¹⁶. Так как F>Fкр и p<0,05, гипотеза о нулевой значимости всех регрессоров отвергается: модель в целом статистически значима.')
+para(doc,'Частная проверка ВРП выполнялась по формуле (8): t=0,008059/0,004444=1,813 при df=68. Для направленной альтернативы β₁>0 критическое значение tкр(0,95;68)=1,668; одностороннее p=0,0371. Поскольку t>tкр и p<0,05, H₀ о неположительном коэффициенте отвергается: связь ВРП с затратами положительна. При двусторонней проверке p=0,0742, поэтому на 5%-м уровне по двусторонней альтернативе коэффициент незначим. Для НИР двусторонний t=0,321989/0,178846=1,800, p=0,0762: коэффициент положителен, но на 5%-м уровне незначим. Индикаторы сторон света сравнивают Север, Юг и Восток с базовым Западом; ни один из них не значим (p=0,163; 0,251 и 0,897 соответственно).')
 diag=read_csv('11_диагностика_моделей.csv'); d=diag[0]
-para(doc,'Для остатков модели в уровнях тест Шапиро—Уилка дал W=0,771 и p=2,16·10⁻⁹; тест Жарка—Бера дал JB=161,960 и p=6,77·10⁻³⁶. Нормальность остатков отвергается. Тест Бройша—Пагана: LM=13,965, df=10, χ²кр(0,95;10)=18,307, p=0,175; на уровне 5% нет оснований отвергнуть гомоскедастичность, хотя это не доказывает ее. Диаграмма остатков и расчетных значений используется для визуального поиска структуры.')
+para(doc,'Для остатков модели в уровнях тест Шапиро—Уилка дал W=0,688 и p=2,97·10⁻¹¹; тест Жарка—Бера дал JB=204,712 и p=3,53·10⁻⁴⁵. Нормальность остатков отвергается. Тест Бройша—Пагана: LM=8,910, df=5, χ²кр(0,95;5)=11,070, p=0,1127; на уровне 5% нет оснований отвергнуть гомоскедастичность, хотя это не доказывает ее. Тест Рамсея RESET (добавление квадрата расчетного значения) дает F=35,81 и p=9,45·10⁻⁸: линейная форма модели отвергается, то есть связь, вероятно, нелинейна.')
+vif=read_csv('11c_VIF.csv')
+table(doc,['Переменная','VIF'],[[r['Переменная'],val(r['VIF'],3)] for r in vif],caption='Коэффициенты инфляции дисперсии (VIF)',widths=[10.5,6.0])
+para(doc,'VIF для ВРП равен 11,668, для НИР — 11,926, то есть превышает порог 10; для индикаторов сторон света VIF составляет 1,13–1,20. Это подтверждает сильную связь ВРП и НИР (r=0,954) и объясняет, почему индивидуальные коэффициенты количественных факторов оцениваются неточно. Число обусловленности матрицы равно 7 445 902, что также указывает на близость к мультиколлинеарности.')
 figure(doc,'residual_diagnostics.png','Рисунок 8 — Остатки модели в уровнях и Q–Q график.')
-para(doc,'Следовательно, модель статистически значима и объясняет около 71,8% вариации Y в обучающей выборке (скорректированное R²=0,673), но ее предположение о нормальности остатков нарушено. Положительная и значимая общая F-статистика не означает значимость каждого фактора. Высокая связь ВРП и НИР (r=0,954) и очень большое число обусловленности матрицы (18 655 504) требуют осторожности в трактовке индивидуальных коэффициентов. Максимальное расстояние Кука приходится на Москву.')
+para(doc,'Следовательно, модель статистически значима и объясняет около 70,0 % вариации Y в обучающей выборке (скорректированное R²=0,678), но ее предпосылки нарушены: остатки не нормальны, RESET указывает на нелинейность, а VIF количественных факторов превышает 10. Положительная и значимая общая F-статистика не означает надежность каждого коэффициента. Максимальное расстояние Кука приходится на Москву.')
 sens=read_csv('11b_чувствительность_к_влиятельному_региону.csv')
-table(doc,['Вариант','Оценка β ВРП','R²','p для ВРП','n'],[[r['Модель']+(('; исключена '+r['Удаленный_регион']) if r['Удаленный_регион'] else ''),val(r['Коэффициент_ВРП'],6),val(r['R2'],3),f"{num(r['p_value_ВРП']):.4g}",r['N']] for r in sens],caption='Анализ чувствительности коэффициента ВРП к наблюдению с высоким расстоянием Кука')
-para(doc,'После исключения Москвы коэффициент ВРП меняется с 0,00594 до 0,02712, а p-value — с 0,2037 до 1,80·10⁻⁶ (двусторонний тест коэффициента). Следовательно, вывод об индивидуальном эффекте ВРП чувствителен к одному влиятельному наблюдению; Москва при этом не удалялась из основной модели, поскольку является реальным субъектом, а исключение показано лишь как анализ чувствительности.')
+table(doc,['Вариант','Оценка β ВРП','R²','p для ВРП','n'],[[r['Модель']+(('; исключена '+r['Удаленный_регион']) if r['Удаленный_регион'] else ''),val(r['Коэффициент_ВРП'],6),val(r['R2'],3),fmt_p(r['p_value_ВРП']),r['N']] for r in sens],caption='Анализ чувствительности коэффициента ВРП к наблюдению с высоким расстоянием Кука',widths=[7.2,3.0,1.7,3.0,1.6])
+para(doc,'После исключения Москвы коэффициент ВРП меняется с 0,008059 до 0,025902, а p-value — с 0,0742 до 6,18·10⁻⁷ (двусторонний тест коэффициента). Следовательно, вывод об индивидуальном эффекте ВРП чувствителен к одному влиятельному наблюдению; Москва при этом не удалялась из основной модели, поскольку является реальным субъектом, а исключение показано лишь как анализ чувствительности.')
 
-heading(doc,'2.6 Модификация модели (пункт 12 задания)',2)
-para(doc,'В качестве модификации оценена лог-линейная спецификация: ln(Yᵢ)=α₀+α₁ln(ВРПᵢ)+α₂ln(НИРᵢ)+ΣⱼδⱼDⱼᵢ+uᵢ. Она сжимает шкалу и позволяет трактовать α₁ и α₂ как эластичности при прочих равных. Для ВРП оценка α₁=1,316 (95% ДИ [0,873; 1,759], p<0,001), для НИР α₂=0,260 (95% ДИ [0,004; 0,515], p=0,0465). На обучающей выборке R²=0,804 и скорректированное R²=0,772. Модель лучше описывает логарифм Y на обучающих данных, однако ее RMSE на исходной шкале требует отдельной проверки на тесте; простое обратное экспоненцирование лог-прогноза не корректирует смещение обратного преобразования.')
-para(doc,'Сравнение модификаций: уровни — R²=0,718; логарифмы — R²=0,804. Эти R² относятся к разным шкалам отклика и напрямую не являются достаточным основанием для выбора лучшей модели. RMSE обучающей лог-модели также измеряется в логарифмах, тогда как RMSE модели в уровнях измеряется в млн руб.; напрямую сравнивать их нельзя. Выбор далее производится по ошибкам прогноза в исходных единицах на одинаковых тестовых регионах.')
+heading(doc,'12 Модификация модели (пункт 12 задания)',1)
+para(doc,'В качестве модификации оценена лог-линейная спецификация: ln(Yᵢ)=α₀+α₁ln(ВРПᵢ)+α₂ln(НИРᵢ)+ΣⱼδⱼDⱼᵢ+uᵢ. Она сжимает шкалу и позволяет трактовать α₁ и α₂ как эластичности при прочих равных. Для ВРП оценка α₁=1,556 (95% ДИ [1,099; 2,013], p<0,001), для НИР α₂=0,187 (95% ДИ [−0,085; 0,459], p=0,1754). На обучающей выборке R²=0,751 и скорректированное R²=0,733. Индикаторы Севера и Юга значимо ниже Запада (p=0,0082 и 0,0051), индикатор Востока незначим (p=0,397). Модель лучше описывает логарифм Y на обучающих данных, однако ее RMSE на исходной шкале требует отдельной проверки на тесте; простое обратное экспоненцирование лог-прогноза не корректирует смещение обратного преобразования.')
+para(doc,'Сравнение модификаций: уровни — R²=0,700; логарифмы — R²=0,751. Эти R² относятся к разным шкалам отклика и напрямую не являются достаточным основанием для выбора лучшей модели. RMSE обучающей лог-модели также измеряется в логарифмах, тогда как RMSE модели в уровнях измеряется в млн руб.; напрямую сравнивать их нельзя. Выбор далее производится по ошибкам прогноза в исходных единицах на одинаковых тестовых регионах.')
 
-heading(doc,'2.7 Прогностические способности на тестовом множестве (пункт 13 задания)',2)
+heading(doc,'13 Прогностические способности на тестовом множестве (пункт 13 задания)',1)
 pred=read_csv('12_прогнозы_тестовых_регионов.csv')
-table(doc,['Регион','Факт Y','Прогноз уровни','Прогноз лог-модель'],[[r['region'],val(r['actual'],2),val(r['predicted_level'],2),val(r['predicted_log'],2)] for r in pred],caption='Фактические значения и прогнозы на тестовой выборке',font=9)
+table(doc,['Регион','Факт Y','Уровни: прогноз [95% ДИ]','Лог-модель: прогноз [95% ДИ]'],[[r['region'],val(r['actual'],2),f"{val(r['predicted_level'],2)} [{minus(val(r['lower_level'],2))}; {minus(val(r['upper_level'],2))}]",f"{val(r['predicted_log'],2)} [{val(r['lower_log'],2)}; {val(r['upper_log'],2)}]"] for r in pred],caption='Фактические значения, прогнозы и 95%-ные интервалы прогноза',font=8,widths=[4.3,2.4,4.9,4.9])
 metrics=read_csv('13_метрики_тестового_прогноза.csv')
-table(doc,['Модель','RMSE','MAE','MAPE','Средняя ошибка'],[[r['Модель'],val(r['RMSE'],2),val(r['MAE'],2),val(r['MAPE_%'],1)+'%',val(r['Средняя ошибка'],2)] for r in metrics],caption='Метрики точности прогноза в исходной шкале затрат',font=9)
+table(doc,['Модель','RMSE','MAE','MAPE','Средняя ошибка'],[[r['Модель'],val(r['RMSE'],2),val(r['MAE'],2),val(r['MAPE_%'],1)+'%',val(r['Средняя ошибка'],2)] for r in metrics],caption='Метрики точности прогноза в исходной шкале затрат',widths=[4.4,3.1,3.1,2.9,3.0])
 equation(doc,'RMSE = √[Σ(ŷᵢ − yᵢ)² / m]',11)
 equation(doc,'MAE = Σ|ŷᵢ − yᵢ| / m',12)
 equation(doc,'MAPE = (100 % / m) · Σ|ŷᵢ − yᵢ| / |yᵢ|,   m = 5',13)
-para(doc,'Ошибки рассчитаны по формулам (11)–(13) для пяти заранее отложенных регионов в исходной шкале Y. Для линейной модели в уровнях RMSE=7 752,92 млн руб., MAE=6 566,83 млн руб.; для логарифмической модели — RMSE=28 318,07 млн руб., MAE=17 313,95 млн руб. На этой небольшой тестовой выборке модель в уровнях прогнозирует точнее. MAPE для нее крайне велик (8 978,9%), поскольку фактические затраты в некоторых тестовых регионах малы; показатель нестабилен при малом знаменателе. Для лог-модели MAPE=468,6%, также велик. Обе модели имеют заметные ошибки и не обеспечивают надежный прогноз для каждого отдельного региона.')
+para(doc,'Ошибки рассчитаны по формулам (11)–(13) для пяти заранее отложенных регионов в исходной шкале Y. Для линейной модели в уровнях RMSE=7 593,33 млн руб., MAE=6 546,23 млн руб.; для логарифмической модели — RMSE=22 321,76 млн руб., MAE=13 627,98 млн руб. На этой небольшой тестовой выборке модель в уровнях прогнозирует точнее. MAPE для нее крайне велик (2 609,7%), поскольку фактические затраты в некоторых тестовых регионах малы; показатель нестабилен при малом знаменателе. Для лог-модели MAPE=280,7%, также велик. 95%-ные интервалы прогноза очень широкие: для малых регионов нижняя граница модели в уровнях отрицательна (например, у Калмыкии [−33 258,4; 37 001,8] млн руб.), а интервал лог-модели для Калмыкии составляет [1,9; 363,1] млн руб. Обе модели имеют заметные ошибки и не обеспечивают надежный прогноз для каждого отдельного региона.')
 figure(doc,'test_predictions.png','Рисунок 9 — Фактические и прогнозные затраты на тестовых регионах.')
-para(doc,'Тестовая выборка мала (m=5) и включает регионы с очень разными масштабами Y, поэтому точность оценки обобщающей способности ограничена. Случайное разбиение не гарантирует представительность каждого округа и диапазона размеров экономики. Вывод о предпочтении модели в уровнях относится к данному тесту и не является универсальным.')
+para(doc,'Тестовая выборка мала (m=5) и включает регионы с очень разными масштабами Y, поэтому точность оценки обобщающей способности ограничена. Случайное разбиение не гарантирует представительность каждой стороны света и диапазона размеров экономики. Вывод о предпочтении модели в уровнях относится к данному тесту и не является универсальным.')
 
-heading(doc,'2.8 Итоговый вывод и чувствительность метода к качеству данных (пункт 14 задания)',2)
-para(doc,'Цель построить интерпретируемую модель для региональных затрат на технологические инновации достигнута: оценено уравнение МНК с количественными факторами ВРП и НИР и категориальным признаком федерального округа; приведены коэффициенты, доверительные интервалы, тесты, диагностика и прогнозы на отложенных данных. Модель значима в целом, но индивидуальный положительный эффект ВРП в основной спецификации статистически не подтвержден, тогда как коэффициент НИР положителен и значим при контроле включенных факторов.')
-para(doc,'Логарифмическая модель лучше описывает обучающую выборку на логарифмической шкале, но на пяти тестовых регионах дает более крупные ошибки в миллионах рублей. Для практического прогноза в рамках проведенного сравнения предпочтительнее линейная модель в уровнях, однако ее остатки не нормальны, индивидуальный вывод по ВРП меняется при исключении Москвы, а тестовая точность невысока. Модель следует рассматривать как ориентировочную оценку связей, а не как готовый инструмент точного бюджетного планирования.')
-para(doc,'Результаты чувствительны к качеству и полноте данных: пять территорий исключены из-за неполного сопоставления; разные варианты названий требуют аккуратной нормализации; крупные субъекты резко влияют на оценки; ВРП и НИР тесно связаны между собой. Ошибочная обработка единиц (тыс. руб. против млн руб.), агрегатов или отсутствующих значений могла бы существенно изменить коэффициенты и выводы. Для повышения надежности полезны расширенная проверка источников по исключенным территориям, робастные стандартные ошибки, дополнительные экономические факторы и проверка на более крупной или повторной тестовой выборке.')
+heading(doc,'14 Итоговый вывод и чувствительность метода к качеству данных (пункт 14 задания)',1)
+para(doc,'Цель построить интерпретируемую модель для региональных затрат на технологические инновации достигнута: оценено уравнение МНК с количественными факторами ВРП и НИР и категориальным признаком стороны света; приведены коэффициенты, доверительные интервалы, тесты, диагностика и прогнозы на отложенных данных. Модель значима в целом и объясняет 70,0 % вариации. Коэффициент ВРП положителен и значим по одностороннему критерию (p=0,0371), но не по двустороннему (p=0,0742), чувствителен к Москве и имеет VIF=11,7. Коэффициент НИР положителен, но на 5%-м уровне незначим (p=0,0762).')
+para(doc,'Логарифмическая модель лучше описывает обучающую выборку на логарифмической шкале, но на пяти тестовых регионах дает более крупные ошибки в миллионах рублей. Для практического прогноза в рамках проведенного сравнения предпочтительнее линейная модель в уровнях, однако ее остатки не нормальны, RESET указывает на нелинейность, VIF количественных факторов превышает 10, индивидуальный вывод по ВРП меняется при исключении Москвы, а тестовая точность невысока. Модель следует рассматривать как ориентировочную оценку связей, а не как готовый инструмент точного бюджетного планирования.')
+para(doc,'Результаты чувствительны к качеству и полноте данных: пять территорий исключены из-за неполного сопоставления, а Архангельская область — из-за несопоставимости территориального охвата; разные варианты названий требуют аккуратной нормализации; крупные субъекты резко влияют на оценки; ВРП и НИР тесно связаны между собой. Сторона света — укрупненная конструкция: внутри каждой группы сохраняется значительная неоднородность, а группа «Север» включает всего пять регионов, поэтому ее индикатор оценивается неустойчиво. Ошибочная обработка единиц (тыс. руб. против млн руб.), агрегатов или отсутствующих значений могла бы существенно изменить коэффициенты и выводы. Для повышения надежности полезны расширенная проверка источников по исключенным территориям, робастные стандартные ошибки, дополнительные экономические факторы и проверка на более крупной или повторной тестовой выборке.')
 
 heading(doc,'Заключение',1)
-para(doc,'По результатам исследования выявлена сильная положительная парная связь затрат на инновации с ВРП и НИР. В многофакторной линейной модели общий набор регрессоров значим, но отдельный эффект ВРП статистически не подтвержден; этот вывод чувствителен к Москве. Логарифмическая модель показала меньшую тестовую точность, поэтому модель в уровнях предпочтительнее в данном сравнении, но ее прогноз следует применять с осторожностью.')
+para(doc,'По результатам исследования выявлена сильная положительная парная связь затрат на инновации с ВРП и НИР. В многофакторной линейной модели общий набор регрессоров значим, коэффициент ВРП положителен и значим по одностороннему критерию (t=1,81; p=0,037), но не по двустороннему (p=0,074) и чувствителен к Москве; коэффициент НИР положителен, но незначим (p=0,076). Логарифмическая модель показала меньшую тестовую точность, поэтому модель в уровнях предпочтительнее в данном сравнении, но ее прогноз следует применять с осторожностью.')
 
 heading(doc,'Список использованных источников',1)
 for item in [
@@ -302,7 +518,7 @@ for item in [
  '4. Росстат. Наука, инновации и технологии: официальный раздел статистики [Электронный ресурс]. URL: https://rosstat.gov.ru/statistics/science (дата обращения: 22.11.2026).',
  '5. Росстат. Национальные счета: официальный раздел статистики [Электронный ресурс]. URL: https://rosstat.gov.ru/statistics/accounts (дата обращения: 22.11.2026).'
 ]:
-    p=doc.add_paragraph(style='Normal'); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.left_indent=Cm(1.25); p.paragraph_format.first_line_indent=Cm(-1.25); p.paragraph_format.line_spacing=1.5; p.add_run(item)
+    p=doc.add_paragraph(style='Normal'); p.alignment=WD_ALIGN_PARAGRAPH.LEFT; p.paragraph_format.left_indent=Cm(1.25); p.paragraph_format.first_line_indent=Cm(-1.25); p.paragraph_format.line_spacing=1.5; p.add_run(item)
 
 doc.core_properties.title='Затраты на технологические инновации в регионах России в 2014 году'
 doc.core_properties.subject='Отчет по заданиям 1 и 2, вариант 31'
